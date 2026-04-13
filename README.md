@@ -118,6 +118,11 @@ src/
 └── shared/
     └── types.ts             # Shared type definitions
 ```
+---
+
+Finally，Thanks to everyone on LinuxDo for their support! Welcome to join https://linux.do/ for all kinds of technical exchanges, cutting-edge AI information, and AI experience sharing, all on Linuxdo!
+
+---
 
 ## License
 
