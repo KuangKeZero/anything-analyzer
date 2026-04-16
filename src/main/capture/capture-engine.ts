@@ -40,7 +40,15 @@ export class CaptureEngine extends EventEmitter {
   }): void {
     if (!this.sessionId) return
 
-    const sequence = this.requestsRepo.getNextSequence(this.sessionId)
+    let sequence: number
+    // Guard quit race: DB may already be closing during app shutdown.
+    try {
+      sequence = this.requestsRepo.getNextSequence(this.sessionId)
+    } catch (err) {
+      console.warn('[CaptureEngine] getNextSequence failed:', (err as Error).message)
+      return
+    }
+
     // Generate a unique ID per record to avoid UNIQUE constraint conflicts.
     // The original requestId from CDP/proxy may repeat across sessions or retries.
     const uniqueId = `${this.sessionId}-${sequence}`

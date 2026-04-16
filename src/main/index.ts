@@ -24,6 +24,8 @@ import { join } from "path";
 
 const windowManager = new WindowManager();
 const mcpManager = new MCPClientManager();
+let sessionManagerRef: SessionManager | null = null;
+let quitInProgress = false;
 
 // MITM Proxy — initialized once, shared across the app lifetime
 const caManager = new CaManager(join(app.getPath("userData"), "mitm-ca"));
@@ -50,6 +52,7 @@ app.whenReady().then(async () => {
 
   // Initialize session manager
   const sessionManager = new SessionManager(sessionsRepo, captureEngine);
+  sessionManagerRef = sessionManager;
 
   // Recover from potential crash
   sessionManager.recoverFromCrash();
@@ -152,15 +155,41 @@ app.on("window-all-closed", () => {
   }
 });
 
-app.on("before-quit", () => {
-  // Disable system proxy before exiting to avoid leaving the system in a broken state
-  SystemProxy.disable().catch(() => {});
-  const config = loadMitmProxyConfig();
-  if (config.systemProxy) {
-    saveMitmProxyConfig({ ...config, systemProxy: false });
-  }
-  mitmProxy.stop().catch(() => {});
-  stopMCPServer().catch(() => {});
-  mcpManager.disconnectAll().catch(() => {});
-  closeDatabase();
+app.on("before-quit", (event) => {
+  if (quitInProgress) return;
+
+  // Block immediate quit and perform ordered async cleanup first.
+  event.preventDefault();
+  quitInProgress = true;
+
+  (async () => {
+    try {
+      // Mark shutdown state early so tab destroy handlers don't recreate tabs.
+      windowManager.setShuttingDown(true);
+
+      // 1) Stop capture pipelines first, so no new DB writes are produced.
+      const currentSessionId = sessionManagerRef?.getCurrentSessionId();
+      if (sessionManagerRef && currentSessionId) {
+        await sessionManagerRef.stopCapture(currentSessionId);
+      }
+
+      // 2) Disable system proxy and persist state.
+      await SystemProxy.disable().catch(() => {});
+      const config = loadMitmProxyConfig();
+      if (config.systemProxy) {
+        saveMitmProxyConfig({ ...config, systemProxy: false });
+      }
+
+      // 3) Stop async services.
+      await mitmProxy.stop().catch(() => {});
+      await stopMCPServer().catch(() => {});
+      await mcpManager.disconnectAll().catch(() => {});
+    } finally {
+      // 4) Close DB last, then let Electron finish normal quit flow.
+      closeDatabase();
+      app.quit();
+    }
+  })().catch(() => {
+    // Ignore and still force-exit via finally block above.
+  });
 });

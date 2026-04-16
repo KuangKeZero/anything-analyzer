@@ -22,6 +22,8 @@ export class TabManager extends EventEmitter {
   private boundsCalculator: (() => Electron.Rectangle) | null = null;
   /** Track destroyed tabs to avoid double-close */
   private destroyedTabs = new Set<string>();
+  /** True when app is quitting: no tab recreation/new tabs allowed */
+  private isShuttingDown = false;
 
   /**
    * Initialize with the main window and a bounds calculator callback.
@@ -161,6 +163,11 @@ export class TabManager extends EventEmitter {
     return Array.from(this.tabs.values());
   }
 
+  /** Mark manager as shutting down (disables tab auto-recreation paths). */
+  setShuttingDown(shuttingDown: boolean): void {
+    this.isShuttingDown = shuttingDown;
+  }
+
   /**
    * Destroy all tabs and clean up.
    */
@@ -238,6 +245,15 @@ export class TabManager extends EventEmitter {
     // bypassed our safeguards). Clean up gracefully instead of crashing.
     wc.on("destroyed", () => {
       if (this.destroyedTabs.has(tab.id) || !this.tabs.has(tab.id)) return;
+
+      // During app quit, WebContents are expected to be destroyed; do not recreate tabs.
+      if (this.isShuttingDown) {
+        this.tabs.delete(tab.id);
+        this.destroyedTabs.add(tab.id);
+        if (this.activeTabId === tab.id) this.activeTabId = null;
+        this.emit("tab-closed", { tabId: tab.id });
+        return;
+      }
 
       // If this is the last tab, replace it with a new blank tab
       // instead of letting the app crash with no view.

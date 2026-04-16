@@ -113,6 +113,11 @@ export class WindowManager {
     return this.tabManager;
   }
 
+  /** Propagate app shutdown state to tab manager. */
+  setShuttingDown(shuttingDown: boolean): void {
+    this.tabManager?.setShuttingDown(shuttingDown);
+  }
+
   /**
    * Get the active tab's WebContents (for backward compatibility).
    */
