@@ -223,6 +223,7 @@ export class AnalysisReportsRepo {
     findBySession: Database.Statement
     findById: Database.Statement
     deleteBySession: Database.Statement
+    deleteById: Database.Statement
   }
 
   constructor(private db: Database.Database) {
@@ -235,7 +236,8 @@ export class AnalysisReportsRepo {
         'SELECT * FROM analysis_reports WHERE session_id = ? ORDER BY created_at DESC'
       ),
       findById: db.prepare('SELECT * FROM analysis_reports WHERE id = ?'),
-      deleteBySession: db.prepare('DELETE FROM analysis_reports WHERE session_id = ?')
+      deleteBySession: db.prepare('DELETE FROM analysis_reports WHERE session_id = ?'),
+      deleteById: db.prepare('DELETE FROM analysis_reports WHERE id = ?')
     }
   }
 
@@ -253,6 +255,10 @@ export class AnalysisReportsRepo {
 
   deleteBySession(sessionId: string): void {
     this.stmts.deleteBySession.run(sessionId)
+  }
+
+  deleteById(id: string): void {
+    this.stmts.deleteById.run(id)
   }
 }
 

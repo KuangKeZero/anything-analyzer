@@ -42,6 +42,9 @@ import { randomUUID } from "node:crypto";
 /** Active analysis abort controllers, keyed by sessionId */
 const analysisControllers = new Map<string, AbortController>();
 
+/** Report IDs with in-flight chat calls — protected from cascade deletion */
+const activeChatReports = new Set<string>();
+
 export function registerIpcHandlers(deps: {
   sessionManager: SessionManager;
   aiAnalyzer: AiAnalyzer;
@@ -114,6 +117,12 @@ export function registerIpcHandlers(deps: {
   });
 
   ipcMain.handle("session:delete", async (_event, sessionId: string) => {
+    // Check if any reports in this session have in-flight chat calls
+    const sessionReports = reportsRepo.findBySession(sessionId);
+    const hasActiveChat = sessionReports.some(r => activeChatReports.has(r.id));
+    if (hasActiveChat) {
+      throw new Error("Cannot delete session while AI chat is in progress. Please wait for the response to complete.");
+    }
     const tabManager = windowManager.getTabManager();
     await sessionManager.deleteSession(sessionId, tabManager ?? undefined);
   });
@@ -266,7 +275,23 @@ export function registerIpcHandlers(deps: {
     requestsRepo.deleteBySession(sessionId);
     jsHooksRepo.deleteBySession(sessionId);
     storageSnapshotsRepo.deleteBySession(sessionId);
-    reportsRepo.deleteBySession(sessionId);
+
+    // Protect reports with in-flight chat from cascade deletion
+    const allReports = reportsRepo.findBySession(sessionId);
+    const protectedIds = new Set(
+      allReports.filter(r => activeChatReports.has(r.id)).map(r => r.id)
+    );
+
+    if (protectedIds.size === 0) {
+      reportsRepo.deleteBySession(sessionId);
+    } else {
+      // Delete only unprotected reports
+      for (const r of allReports) {
+        if (!protectedIds.has(r.id)) {
+          reportsRepo.deleteById(r.id);
+        }
+      }
+    }
   });
 
   // ---- AI Analysis ----
@@ -327,13 +352,25 @@ export function registerIpcHandlers(deps: {
           }
         : undefined;
 
-      const reply = await aiAnalyzer.chat(sessionId, config, history, userMessage, onProgress);
+      if (reportId) {
+        activeChatReports.add(reportId);
+      }
 
-      // Persist user message and AI reply to database
-      chatMessagesRepo.append(reportId, 'user', userMessage);
-      chatMessagesRepo.append(reportId, 'assistant', reply);
+      try {
+        const reply = await aiAnalyzer.chat(sessionId, config, history, userMessage, onProgress);
 
-      return reply;
+        // Persist user message and AI reply to database
+        if (reportId) {
+          chatMessagesRepo.append(reportId, 'user', userMessage);
+          chatMessagesRepo.append(reportId, 'assistant', reply);
+        }
+
+        return reply;
+      } finally {
+        if (reportId) {
+          activeChatReports.delete(reportId);
+        }
+      }
     },
   );
 
@@ -344,7 +381,16 @@ export function registerIpcHandlers(deps: {
   });
 
   ipcMain.handle("data:saveChatMessages", async (_event, reportId: string, messages: Array<{ role: string; content: string }>) => {
-    chatMessagesRepo.insertMany(reportId, messages);
+    try {
+      chatMessagesRepo.insertMany(reportId, messages);
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (msg.includes('FOREIGN KEY constraint failed')) {
+        console.warn(`[data:saveChatMessages] Report ${reportId} no longer exists, skipping`);
+      } else {
+        throw e;
+      }
+    }
   });
 
   // ---- Settings ----
